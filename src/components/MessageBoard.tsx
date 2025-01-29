@@ -10,9 +10,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getMessageContent } from "@/view-functions/getMessageContent";
 import { MESSAGE_BOARD_ABI } from "@/utils/message_board_abi";
+import { createEntryPayload } from "@thalalabs/surf";
+import { useWallet } from "@aptos-labs/wallet-adapter-react";
 
 export function MessageBoard() {
   const { client } = useWalletClient();
+  const { account, signTransaction } = useWallet();
 
   const queryClient = useQueryClient();
 
@@ -48,20 +51,46 @@ export function MessageBoard() {
     }
 
     try {
-      const committedTransaction = await client.useABI(MESSAGE_BOARD_ABI).post_message({
-        type_arguments: [],
-        arguments: [newMessageContent],
+      if (!account?.address) {
+        console.error("Account not available");
+        return;
+      }
+
+      const contractPayload = createEntryPayload(MESSAGE_BOARD_ABI, {
+        function: "post_message",
+        typeArguments: [],
+        functionArguments: [newMessageContent],
       });
-      const executedTransaction = await aptosClient().waitForTransaction({
-        transactionHash: committedTransaction.hash,
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["message-content"],
-      });
-      toast({
-        title: "Success",
-        description: `Transaction succeeded, hash: ${executedTransaction.hash}`,
-      });
+
+      const transactionPayload = {
+        sender: account?.address,
+        data: contractPayload,
+        withFeePayer: true, // if true signTransaction fails
+      };
+
+      const transaction = await aptosClient().transaction.build.simple(transactionPayload);
+
+      await signTransaction(transaction).then((res) => {
+        console.log("🍌 success", res);
+      }).catch((err) => {
+        console.error("🍌 error", err);
+      }); /* here the code breaks - not included in this example are the following steaps:
+            serialize -> api route -> deserialize -> aptos.transaction.signAsFeePayer -> aptos.transaction.submit.simple -> aptos.waitForTransaction */
+
+      // const committedTransaction = await client.useABI(MESSAGE_BOARD_ABI).post_message({
+      //   type_arguments: [],
+      //   arguments: [newMessageContent],
+      // });
+      // const executedTransaction = await aptosClient().waitForTransaction({
+      //   transactionHash: committedTransaction.hash,
+      // });
+      // queryClient.invalidateQueries({
+      //   queryKey: ["message-content"],
+      // });
+      // toast({
+      //   title: "Success",
+      //   description: `Transaction succeeded, hash: ${executedTransaction.hash}`,
+      // });
     } catch (error) {
       console.error(error);
     }
