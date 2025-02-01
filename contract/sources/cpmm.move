@@ -15,10 +15,6 @@ module message_board_addr::cpmm {
     struct LiquidityPool has key, store {
         token_a_vault: Object<FungibleStore>,
         token_b_vault: Object<FungibleStore>,
-        // token_a_mint_cap: fungible_asset::MintRef,
-        // token_a_burn_cap: fungible_asset::BurnRef,
-        // token_b_mint_cap: fungible_asset::MintRef,
-        // token_b_burn_cap: fungible_asset::BurnRef,
     }
 
     struct AMMGlobalState has key {
@@ -76,7 +72,7 @@ module message_board_addr::cpmm {
         fungible_asset::deposit(liquidity_pool.token_b_vault, token_b);
     }
 
-    public fun buy_in(
+    public fun swap(
         token_a_metadata: Object<Metadata>,
         token_b_metadata: Object<Metadata>,
         token_in: FungibleAsset,
@@ -88,12 +84,12 @@ module message_board_addr::cpmm {
         let global_state = borrow_global_mut<AMMGlobalState>(@amm_address);
         assert!(smart_table::contains(&global_state.pools, asset_pair_identifier), E_CATCH_ALL);
         let liquidity_pool = smart_table::borrow(&global_state.pools, asset_pair_identifier);
-        
+
         let token_in_amount = fungible_asset::amount(&token_in);
         let is_token_a = fungible_asset::metadata_from_asset(&token_in) == token_a_metadata;
         let in_vault = if(is_token_a) liquidity_pool.token_a_vault else liquidity_pool.token_b_vault;
         let out_vault = if(is_token_a) liquidity_pool.token_b_vault else liquidity_pool.token_a_vault;
-        
+
         let in_vault_balance = fungible_asset::balance(in_vault);
         let new_in_vault_balance = in_vault_balance + token_in_amount;
 
@@ -105,19 +101,62 @@ module message_board_addr::cpmm {
         fungible_asset::withdraw(global_signer, out_vault, token_out)
     }
 
+    public fun simulate_token_price_change(
+        in_vault_balance: u64,
+        out_vault_balance: u64,
+        token_in_amount: u64,
+    ): (u64, u64) {
+        let new_in_vault_balance = in_vault_balance + token_in_amount;
+        let out_tokens = math64::mul_div(out_vault_balance, token_in_amount, new_in_vault_balance);
+        let new_out_vault_balance = out_vault_balance - out_tokens;
+        token_price_impl(new_in_vault_balance, new_out_vault_balance)
+    }
+
+    // public fun sell(
+    //     token_a_metadata: Object<Metadata>,
+    //     token_b_metadata: Object<Metadata>,
+    //     token_out: FungibleAsset,
+    // ): FungibleAsset acquires AMMGlobalState {
+    //     assert!(fungible_asset::amount(&token_out) > 0, E_CATCH_ALL);
+    //     let asset_pair_identifier = cpmm_utils::asset_pair_identifier(token_a_metadata, token_b_metadata);
+    //     let global_signer = get_global_signer();
+    //
+    //     let global_state = borrow_global_mut<AMMGlobalState>(@amm_address);
+    //     assert!(smart_table::contains(&global_state.pools, asset_pair_identifier), E_CATCH_ALL);
+    //     let liquidity_pool = smart_table::borrow(&global_state.pools, asset_pair_identifier);
+    //
+    //     let token_out_amount = fungible_asset::amount(&token_out);
+    //     let is_token_a = fungible_asset::metadata_from_asset(&token_out) == token_a_metadata;
+    //     let in_vault = if(is_token_a) liquidity_pool.token_a_vault else liquidity_pool.token_b_vault;
+    //     let out_vault = if(is_token_a) liquidity_pool.token_b_vault else liquidity_pool.token_a_vault;
+    //
+    //     let in_vault_balance = fungible_asset::balance(in_vault);
+    //     let new_in_vault_balance = in_vault_balance + token_in_amount;
+    //
+    //     let token_out = math64::mul_div(fungible_asset::balance(out_vault), token_in_amount, new_in_vault_balance);
+    //
+    //     assert!(token_out > 0, E_CATCH_ALL);
+    //     // Perform the swap: update vaults
+    //     fungible_asset::deposit(in_vault, token_in);
+    //     fungible_asset::withdraw(global_signer, out_vault, token_out)
+    // }
+
     public fun remove_liquidity(
         token_a_metadata: Object<Metadata>,
         token_b_metadata: Object<Metadata>,
-        token_a: FungibleAsset,
-        token_b: FungibleAsset,
-    ) acquires AMMGlobalState {
+        token_a_amount: u64,
+        token_b_amount: u64,
+    ): (FungibleAsset, FungibleAsset) acquires AMMGlobalState {
         let asset_pair_identifier = cpmm_utils::asset_pair_identifier(token_a_metadata, token_b_metadata);
+        let global_signer = get_global_signer();
         let global_state = borrow_global_mut<AMMGlobalState>(@amm_address);
 
         assert!(smart_table::contains(&global_state.pools, asset_pair_identifier), E_CATCH_ALL);
         let liquidity_pool = smart_table::borrow(&global_state.pools, asset_pair_identifier);
-        fungible_asset::deposit(liquidity_pool.token_a_vault, token_a);
-        fungible_asset::deposit(liquidity_pool.token_b_vault, token_b);
+        return (
+            fungible_asset::withdraw(global_signer, liquidity_pool.token_a_vault, token_a_amount),
+            fungible_asset::withdraw(global_signer, liquidity_pool.token_b_vault, token_b_amount)
+        )
     }
 
     inline fun create_token_store(account: &signer, token: Object<Metadata>): Object<FungibleStore> {
@@ -136,7 +175,13 @@ module message_board_addr::cpmm {
         token_b_metadata: Object<Metadata>,
     ): (u64, u64) acquires AMMGlobalState {
         let (a_balance, b_balance) = available_shares(token_a_metadata, token_b_metadata);
+        token_price_impl(a_balance, b_balance)
+    }
 
+    inline fun token_price_impl(
+        a_balance: u64,
+        b_balance: u64,
+    ): (u64, u64) {
         let sum_balance = a_balance + b_balance;
         (math64::mul_div(a_balance, 1_0000_0000, sum_balance), math64::mul_div(b_balance, 1_0000_0000, sum_balance))
     }

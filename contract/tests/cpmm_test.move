@@ -8,6 +8,8 @@ module message_board_addr::cpmm_test {
     #[test_only]
     use aptos_std::debug;
     #[test_only]
+    use aptos_std::math64;
+    #[test_only]
     use aptos_framework::fungible_asset;
     #[test_only]
     use aptos_framework::fungible_asset::{MintRef, TransferRef, BurnRef};
@@ -17,6 +19,8 @@ module message_board_addr::cpmm_test {
     use aptos_framework::primary_fungible_store;
     #[test_only]
     use message_board_addr::cpmm;
+    #[test_only]
+    use message_board_addr::cpmm::swap;
 
 
     const ASSET_NAME_A: vector<u8> = b"Yes";
@@ -87,11 +91,11 @@ module message_board_addr::cpmm_test {
 
             if (*is_token_b) {
                 let buy_in = fungible_asset::mint(&mint_b, *amount);
-                let yes_shares = cpmm::buy_in(metadata_a, metadata_b, buy_in);
+                let yes_shares = cpmm::swap(metadata_a, metadata_b, buy_in);
                 fungible_asset::burn(&burn_a, yes_shares);
             } else {
                 let buy_in = fungible_asset::mint(&mint_a, *amount);
-                let no_shares = cpmm::buy_in(metadata_a, metadata_b, buy_in);
+                let no_shares = cpmm::swap(metadata_a, metadata_b, buy_in);
                 fungible_asset::burn(&burn_b, no_shares);
             };
 
@@ -106,6 +110,96 @@ module message_board_addr::cpmm_test {
         }
     }
 
+    #[test(amm_address = @amm_address)]
+    public fun test_buy_sell(amm_address: &signer) {
+        cpmm::init_test(amm_address);
+        let (mint_a, _, burn_a, mint_b, _, burn_b) = init_tokens(amm_address);
+        let metadata_a = fungible_asset::mint_ref_metadata(&mint_a);
+        let metadata_b = fungible_asset::mint_ref_metadata(&mint_b);
+
+        // Initialize liquidity pool
+        let initial_a_liquidity = fungible_asset::mint(&mint_a, 1000_0000_0000);
+        let initial_b_liquidity = fungible_asset::mint(&mint_b, 1000_0000_0000);
+        cpmm::create_liquidity_pool(metadata_a, metadata_b, initial_a_liquidity, initial_b_liquidity);
+
+
+        let buy_in_money = 12_3456_7890;
+
+        let (price_a, price_b) = cpmm::token_price(metadata_a, metadata_b);
+        let buy_in_share_amount = math64::mul_div(buy_in_money, 1_0000_0000, price_a);
+
+        let b_shares = fungible_asset::mint(&mint_b, buy_in_share_amount);
+        let a_shares = cpmm::swap(metadata_a, metadata_b, b_shares);
+
+        assert!(fungible_asset::amount(&a_shares) == 24_0963_8532, 0);
+
+        let b_shares = cpmm::swap(metadata_a, metadata_b, a_shares);
+        let (price_a, price_b) = cpmm::token_price(metadata_a, metadata_b);
+        let payout = math64::mul_div(fungible_asset::amount(&b_shares), price_b, 1_0000_0000);
+        assert!(payout == buy_in_money - 1, 0);
+
+        fungible_asset::burn(&burn_b, b_shares);
+    }
+
+    #[test(amm_address = @amm_address)]
+    public fun buy_huge(amm_address: &signer) {
+        cpmm::init_test(amm_address);
+        let (mint_a, _, burn_a, mint_b, _, burn_b) = init_tokens(amm_address);
+        let metadata_a = fungible_asset::mint_ref_metadata(&mint_a);
+        let metadata_b = fungible_asset::mint_ref_metadata(&mint_b);
+
+        // Initialize liquidity pool
+        let initial_a_liquidity = fungible_asset::mint(&mint_a, 1000_0000_0000);
+        let initial_b_liquidity = fungible_asset::mint(&mint_b, 1000_0000_0000);
+        cpmm::create_liquidity_pool(metadata_a, metadata_b, initial_a_liquidity, initial_b_liquidity);
+
+
+        let buy_in_shares = 3000_0000_0000;
+
+        let (price_a_before, _) = cpmm::token_price(metadata_a, metadata_b);
+        let (shares_a, shares_b) = cpmm::available_shares(metadata_a, metadata_b);
+        let (price_a_simulated, _) = cpmm::simulate_token_price_change(shares_a, shares_b, buy_in_shares);
+        let diff = math64::max(price_a_simulated, price_a_before) - math64::min(price_a_simulated, price_a_before);
+        if (diff >= 1000_0000) {   // 10%
+            debug::print(&b"aaa");
+            debug::print(&price_a_before);
+            debug::print(&price_a_simulated);
+            let scaling_factor = (10 * diff) / 1000_0000; // (math64::max(price_a_simulated, price_a_before) / math64::min(price_a_simulated, price_a_before));
+            debug::print(&scaling_factor);
+            let (shares_a, shares_b) = cpmm::available_shares(metadata_a, metadata_b);
+            let additional_a_liquidity = fungible_asset::mint(&mint_a, shares_a * scaling_factor);
+            let additional_b_liquidity = fungible_asset::mint(&mint_b, shares_b * scaling_factor);
+            cpmm::add_liquidity(metadata_a, metadata_b, additional_a_liquidity, additional_b_liquidity);
+        };
+
+        let b_shares = fungible_asset::mint(&mint_b, buy_in_shares);
+        let a_shares = cpmm::swap(metadata_a, metadata_b, b_shares);
+        // let (a, b) = cpmm::available_shares(metadata_b, metadata_a);
+        // debug::print(&a);
+        // debug::print(&b);
+        let (price_a_after, _) = cpmm::token_price(metadata_a, metadata_b);
+        debug::print(&price_a_before);
+        debug::print(&price_a_after);
+        // debug::print(&(math64::max(price_a_after, price_a_before) / math64::min(price_a_after, price_a_before)));
+        // let diff = math64::max(price_a_after, price_a_before) - math64::min(price_a_after, price_a_before);
+        // if (diff >= 1000_0000) {   // 10%
+        //     debug::print(&b"aaa");
+        //     let scaling_factor = (math64::max(price_a_after, price_a_before) / math64::min(price_a_after, price_a_before));
+        //     let (shares_a, shares_b) = cpmm::available_shares(metadata_a, metadata_b);
+        //     let additional_a_liquidity = fungible_asset::mint(&mint_a, shares_a * scaling_factor);
+        //     let additional_b_liquidity = fungible_asset::mint(&mint_b, shares_b * scaling_factor);
+        //     cpmm::add_liquidity(metadata_a, metadata_b, additional_a_liquidity, additional_b_liquidity);
+        // };
+
+        // let (price_a_after_scaling, _) = cpmm::token_price(metadata_a, metadata_b);
+        // debug::print(&price_a_after_scaling);
+        // debug::print(&price_b_before);
+        // debug::print(&price_b_after);
+        // if (price_a_before - price_a_after) {
+        //
+        // }
+        fungible_asset::burn(&burn_a, a_shares);
+    }
 
     #[test_only]
     fun init_tokens(account: &signer): (MintRef, TransferRef, BurnRef, MintRef, TransferRef, BurnRef) {
